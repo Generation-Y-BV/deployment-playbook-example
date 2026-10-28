@@ -1,0 +1,87 @@
+name: Wait for Deployment Playbook
+description: Poll the Deployment Playbook gate API until the requested phase is allowed (fails closed, fails on timeout).
+inputs:
+  playbook-url:
+    description: Base URL of Deployment Playbook, e.g. https://deployment-playbook.com
+    required: true
+  plan-id:
+    description: Plan id to gate on
+    required: true
+  phase:
+    description: before | during | after
+    required: true
+  require-done:
+    description: "If 'true', also wait until planStatus is 'done' (all steps, incl. After deployment, approved/skipped)"
+    required: false
+    default: "false"
+  api-token:
+    description: Workspace API token (pass from a secret)
+    required: true
+  vercel-bypass:
+    description: Optional Vercel automation bypass secret (only for Vercel-protected hosting)
+    required: false
+    default: ""
+  timeout-minutes:
+    description: Give up after this many minutes
+    required: false
+    default: "60"
+  interval-seconds:
+    description: Seconds between polls
+    required: false
+    default: "15"
+runs:
+  using: composite
+  steps:
+    - name: Poll gate (${{ inputs.phase }})
+      shell: bash
+      env:
+        PB_URL: ${{ inputs.playbook-url }}
+        PB_PLAN: ${{ inputs.plan-id }}
+        PB_PHASE: ${{ inputs.phase }}
+        PB_REQUIRE_DONE: ${{ inputs.require-done }}
+        PB_TOKEN: ${{ inputs.api-token }}
+        PB_BYPASS: ${{ inputs.vercel-bypass }}
+        PB_TIMEOUT_MIN: ${{ inputs.timeout-minutes }}
+        PB_INTERVAL: ${{ inputs.interval-seconds }}
+      run: |
+        set -uo pipefail
+        if [ -z "$PB_TOKEN" ]; then echo "::error::PLAYBOOK_API_TOKEN is not set"; exit 1; fi
+        if [ -z "$PB_URL" ] || [ -z "$PB_PLAN" ]; then echo "::error::PLAYBOOK_URL and plan id are required"; exit 1; fi
+        echo "::add-mask::$PB_TOKEN"
+        [ -n "$PB_BYPASS" ] && echo "::add-mask::$PB_BYPASS"
+        url="${PB_URL%/}/api/gate/${PB_PLAN}?phase=${PB_PHASE}"
+        headers=(-H "Authorization: Bearer ${PB_TOKEN}" -H "Accept: application/json")
+        [ -n "$PB_BYPASS" ] && headers+=(-H "x-vercel-protection-bypass: ${PB_BYPASS}")
+        deadline=$(( $(date +%s) + PB_TIMEOUT_MIN * 60 ))
+        attempt=0
+        while :; do
+          attempt=$((attempt + 1))
+          body=$(curl -sS --max-time 30 -o - -w '\n%{http_code}' "${headers[@]}" "$url" 2>/dev/null) || body=$'\n000'
+          code=${body##*$'\n'}
+          json=${body%$'\n'*}
+          allow=false; status=""; reason=""; plan_url=""
+          if [ "$code" = "200" ] && echo "$json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            allow=$(echo "$json" | jq -r '.allow == true')
+            status=$(echo "$json" | jq -r '.planStatus // ""')
+            reason=$(echo "$json" | jq -r '.reason // ""')
+            plan_url=$(echo "$json" | jq -r '.planUrl // ""')
+          else
+            reason="HTTP $code or invalid JSON (treated as not allowed)"
+            if echo "$json" | jq -e '.reason' >/dev/null 2>&1; then reason="HTTP $code: $(echo "$json" | jq -r '.reason')"; fi
+          fi
+          echo "[$attempt] phase=$PB_PHASE allow=$allow planStatus=${status:-?} reason=$reason planUrl=${plan_url:-?}"
+          ok=false
+          if [ "$allow" = "true" ]; then
+            if [ "$PB_REQUIRE_DONE" = "true" ]; then
+              [ "$status" = "done" ] && ok=true
+            else
+              ok=true
+            fi
+          fi
+          if [ "$ok" = "true" ]; then echo "Gate passed for phase '$PB_PHASE'."; exit 0; fi
+          if [ "$status" = "rolled_back" ]; then echo "::error::Plan was rolled back."; exit 1; fi
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error::Timed out after ${PB_TIMEOUT_MIN} min waiting for phase '$PB_PHASE'. Last reason: $reason"; exit 1
+          fi
+          sleep "$PB_INTERVAL"
+        done
