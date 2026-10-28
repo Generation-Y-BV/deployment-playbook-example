@@ -1,0 +1,91 @@
+name: Create Deployment Playbook plan
+description: Create (or reuse) a Deployment Playbook plan from a template via POST /api/plans. Idempotent per repository + ref.
+inputs:
+  playbook-url:
+    description: Base URL of Deployment Playbook, e.g. https://deployment-playbook.com
+    required: true
+  api-token:
+    description: Workspace API token (pass from a secret)
+    required: true
+  template:
+    description: Template id or exact template name
+    required: true
+  ref:
+    description: Release ref, e.g. the tag name
+    required: true
+  repository:
+    description: owner/repo
+    required: false
+    default: ${{ github.repository }}
+  commit-sha:
+    description: Commit SHA
+    required: false
+    default: ${{ github.sha }}
+  run-url:
+    description: Link back to this workflow run
+    required: false
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  name:
+    description: Plan name (default "Release <ref>")
+    required: false
+    default: ""
+  vercel-bypass:
+    description: Optional Vercel automation bypass secret (only for Vercel-protected hosting)
+    required: false
+    default: ""
+outputs:
+  plan-id:
+    description: Plan id
+    value: ${{ steps.create.outputs.plan-id }}
+  plan-url:
+    description: Link to the plan in Deployment Playbook
+    value: ${{ steps.create.outputs.plan-url }}
+runs:
+  using: composite
+  steps:
+    - id: create
+      shell: bash
+      env:
+        PB_URL: ${{ inputs.playbook-url }}
+        PB_TOKEN: ${{ inputs.api-token }}
+        PB_BYPASS: ${{ inputs.vercel-bypass }}
+        PB_TEMPLATE: ${{ inputs.template }}
+        PB_REF: ${{ inputs.ref }}
+        PB_REPO: ${{ inputs.repository }}
+        PB_SHA: ${{ inputs.commit-sha }}
+        PB_RUN_URL: ${{ inputs.run-url }}
+        PB_NAME: ${{ inputs.name }}
+      run: |
+        set -euo pipefail
+        if [ -z "$PB_TOKEN" ]; then echo "::error::PLAYBOOK_API_TOKEN is not set"; exit 1; fi
+        if [ -z "$PB_URL" ]; then echo "::error::PLAYBOOK_URL is not set"; exit 1; fi
+        if [ -z "$PB_TEMPLATE" ]; then echo "::error::PLAYBOOK_TEMPLATE is not set"; exit 1; fi
+        echo "::add-mask::$PB_TOKEN"
+        [ -n "$PB_BYPASS" ] && echo "::add-mask::$PB_BYPASS"
+        body=$(jq -n --arg t "$PB_TEMPLATE" --arg r "$PB_REF" --arg repo "$PB_REPO" --arg sha "$PB_SHA" --arg run "$PB_RUN_URL" --arg n "$PB_NAME" \
+          '{template:$t, ref:$r, repository:$repo, commitSha:$sha, runUrl:$run} + (if $n != "" then {name:$n} else {} end)')
+        headers=(-H "Authorization: Bearer ${PB_TOKEN}" -H "Content-Type: application/json" -H "Accept: application/json")
+        [ -n "$PB_BYPASS" ] && headers+=(-H "x-vercel-protection-bypass: ${PB_BYPASS}")
+        out=""; code=000
+        for attempt in 1 2 3; do
+          resp=$(curl -sS --max-time 30 -o - -w '\n%{http_code}' -X POST "${headers[@]}" --data "$body" "${PB_URL%/}/api/plans" 2>/dev/null) || resp=$'\n000'
+          code=${resp##*$'\n'}; out=${resp%$'\n'*}
+          case "$code" in 200|201|400|401|403|404) break;; esac
+          echo "Attempt $attempt: HTTP $code, retrying in 10s"; sleep 10
+        done
+        if [ "$code" != "200" ] && [ "$code" != "201" ]; then
+          echo "::error::Plan creation failed (HTTP $code): $(echo "$out" | jq -r '.error // "invalid response"' 2>/dev/null || echo 'invalid response')"
+          exit 1
+        fi
+        id=$(echo "$out" | jq -r '.id // empty'); url=$(echo "$out" | jq -r '.planUrl // empty'); created=$(echo "$out" | jq -r '.created')
+        if [ -z "$id" ]; then echo "::error::Response did not contain a plan id"; exit 1; fi
+        if [ "$created" = "true" ]; then verb="Created"; else verb="Reusing existing"; fi
+        echo "$verb plan $id for $PB_REPO@$PB_REF: $url"
+        echo "plan-id=$id" >> "$GITHUB_OUTPUT"
+        echo "plan-url=$url" >> "$GITHUB_OUTPUT"
+        {
+          echo "### Deployment Playbook"
+          echo "$verb plan for \`$PB_REF\`: [$url]($url)"
+          echo
+          echo "Approve the steps there; the gated jobs continue automatically."
+        } >> "$GITHUB_STEP_SUMMARY"

@@ -2,21 +2,31 @@
 
 A reference GitHub Actions pipeline gated by [Deployment Playbook](https://deployment-playbook.com).
 The app is deliberately tiny (a Node.js HTTP server with one `node:test` unit test); the interesting part is
-[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and the reusable composite action
-[`.github/actions/wait-for-playbook`](.github/actions/wait-for-playbook/action.yml).
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) and two reusable composite actions:
+[`create-playbook-plan`](.github/actions/create-playbook-plan/action.yml) and
+[`wait-for-playbook`](.github/actions/wait-for-playbook/action.yml).
+
+Pushing a release tag (`v*`) creates a Deployment Playbook plan from your template automatically; the pipeline then
+waits for the approvals of each phase.
 
 ## Flow
 
 ```mermaid
 flowchart LR
-  test[test<br/>npm test] --> before[before<br/>gate: phase=during<br/>= Before steps done]
+  tag([git push tag v*]) --> test[test<br/>npm test]
+  tag --> create[create-plan<br/>POST /api/plans]
+  create --> before
+  test --> before[before<br/>gate: phase=during<br/>= Before steps done]
   before --> deploy[deploy<br/>dummy deploy]
   before --> during[during<br/>gate: phase=after<br/>= During steps done]
   deploy --> after[after-deployment<br/>gate: planStatus=done<br/>= After steps done]
   during --> after
 ```
 
-1. **test** – runs `npm test`.
+1. **test** – runs `npm test`. In parallel, **create-plan** calls `POST /api/plans` with the template from
+   `PLAYBOOK_TEMPLATE`, `ref` = the tag name, the commit SHA, repository and a link to the run. The plan URL is written
+   to the job summary. Re-running the workflow for the same tag reuses the same plan (idempotent per repository + ref).
+   On a manual run you can pass `plan_id` to gate on an existing plan instead.
 2. **before** – waits until every *Before deployment* step is approved or skipped (`?phase=during` returns
    `allow: true`). Nothing is deployed before that.
 3. **deploy** and **during** run in parallel. `deploy` is a placeholder (`echo`); `during` waits until every
@@ -44,19 +54,52 @@ additionally requires `planStatus == "done"` (`require-done: "true"` on the acti
 ## Setup
 
 1. In Deployment Playbook, an **Admin** creates a workspace API token on `/w/<your-workspace>/connections`.
+   Plans created with the token are proposed on behalf of that Admin (so with four-eyes on, someone else approves).
 2. In this repo (or your copy), **Settings → Secrets and variables → Actions**:
    | Kind | Name | Value |
    | --- | --- | --- |
    | Secret | `PLAYBOOK_API_TOKEN` | the workspace API token |
    | Variable | `PLAYBOOK_URL` | e.g. `https://deployment-playbook.com` |
-   | Variable | `PLAYBOOK_PLAN_ID` | default plan id (can be overridden per manual run with `plan_id`) |
+   | Variable | `PLAYBOOK_TEMPLATE` | template name (exact) or id, e.g. `Standard deployment` |
    | Secret (optional) | `VERCEL_AUTOMATION_BYPASS` | only if you self-host Deployment Playbook behind Vercel Deployment Protection |
-3. Create a plan (from a template) with steps in the three phases, e.g.
+3. Have a template with steps in the three phases, e.g.
    - **Before deployment**: "Change approved by product owner", "DB backup taken"
    - **During deployment**: "Monitor dashboards during rollout"
    - **After deployment**: "Smoke test production", "Close the change"
-   Propose the plan, get it approved, and copy its id into `PLAYBOOK_PLAN_ID` (or pass it as `plan_id` on *Run workflow*).
-4. Push to `main` or run the workflow manually. Approve steps in Deployment Playbook and watch the jobs unblock.
+
+## Usage
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+Open the plan link from the run summary, approve the plan, then approve the steps phase by phase; the jobs unblock as
+you go and the run turns green once the After deployment steps are done.
+
+## Create plan API
+
+```bash
+curl -X POST "$PLAYBOOK_URL/api/plans" \
+  -H "Authorization: Bearer $PLAYBOOK_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"template":"Standard deployment","ref":"v1.0.0","repository":"acme/app","commitSha":"3f2c1ab","runUrl":"https://github.com/acme/app/actions/runs/1"}'
+```
+
+Body: `template` (required, id or exact name), optional `name` (default `Release <ref>`), `environment` (default
+`production`), `ref`, `repository`, `commitSha`, `runUrl`, `fourEyes`. Response (201 created, 200 when a plan for the
+same repository + ref already exists):
+
+```json
+{
+  "id": "abc123",
+  "name": "Release v1.0.0",
+  "status": "PROPOSED",
+  "planUrl": "https://deployment-playbook.com/w/acme/plans/abc123",
+  "gateUrl": "https://deployment-playbook.com/api/gate/abc123",
+  "created": true
+}
+```
+
+Errors return `{"error": "..."}` with 400 (invalid body), 401 (bad token), 403 (not allowed / plan limit), 404 (unknown template).
 
 ## Gate API
 
