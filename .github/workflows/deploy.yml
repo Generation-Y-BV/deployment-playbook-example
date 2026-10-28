@@ -46,7 +46,8 @@ jobs:
         with:
           playbook-url: ${{ vars.PLAYBOOK_URL }}
           plan-id: ${{ env.PLAN_ID }}
-          phase: before
+          # phase=during is allowed once every Before step is approved/skipped
+          phase: during
           api-token: ${{ secrets.PLAYBOOK_API_TOKEN }}
           vercel-bypass: ${{ secrets.VERCEL_AUTOMATION_BYPASS }}
           timeout-minutes: ${{ env.TIMEOUT_MINUTES }}
@@ -69,7 +70,8 @@ jobs:
         with:
           playbook-url: ${{ vars.PLAYBOOK_URL }}
           plan-id: ${{ env.PLAN_ID }}
-          phase: during
+          # phase=after is allowed once every During step is approved/skipped
+          phase: after
           api-token: ${{ secrets.PLAYBOOK_API_TOKEN }}
           vercel-bypass: ${{ secrets.VERCEL_AUTOMATION_BYPASS }}
           timeout-minutes: ${{ env.TIMEOUT_MINUTES }}

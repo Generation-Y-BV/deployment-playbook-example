@@ -9,27 +9,30 @@ The app is deliberately tiny (a Node.js HTTP server with one `node:test` unit te
 
 ```mermaid
 flowchart LR
-  test[test<br/>npm test] --> before[before<br/>gate: phase=before]
+  test[test<br/>npm test] --> before[before<br/>gate: phase=during<br/>= Before steps done]
   before --> deploy[deploy<br/>dummy deploy]
-  before --> during[during<br/>gate: phase=during]
-  deploy --> after[after-deployment<br/>gate: phase=after + planStatus=done]
+  before --> during[during<br/>gate: phase=after<br/>= During steps done]
+  deploy --> after[after-deployment<br/>gate: planStatus=done<br/>= After steps done]
   during --> after
 ```
 
 1. **test** – runs `npm test`.
-2. **before** – waits until the plan is approved and may start (`?phase=before` returns `allow: true`).
+2. **before** – waits until every *Before deployment* step is approved or skipped (`?phase=during` returns
+   `allow: true`). Nothing is deployed before that.
 3. **deploy** and **during** run in parallel. `deploy` is a placeholder (`echo`); `during` waits until every
-   *Before* step is approved or skipped (`?phase=during`).
+   *During deployment* step is approved or skipped (`?phase=after` returns `allow: true`).
 4. **after-deployment** (needs `deploy` and `during`) waits until the **whole plan is complete**: `?phase=after`
    returns `allow: true` **and** `planStatus` is `done`. The run only turns green once the *After deployment* steps are
    approved/skipped in Deployment Playbook.
 
-### Why `planStatus == "done"` for the last job
+### Why each job asks for the *next* phase
 
 The gate answers "may work in this phase **start**?": `?phase=after` becomes `allow: true` as soon as all *Before* and
 *During* steps are resolved, before any *After* step is done. Deployment Playbook marks a plan `DONE` (reported as
 `planStatus: "done"`) the moment its last step is approved or skipped, so the final job polls `?phase=after` and
-additionally requires `planStatus == "done"` (`require-done: "true"` on the action).
+additionally requires `planStatus == "done"` (`require-done: "true"` on the action). The same logic is why the
+`before` job polls `?phase=during` (Before complete) and the `during` job polls `?phase=after` (During complete):
+`?phase=before` would be allowed immediately, before anything is approved.
 
 ### Polling behaviour
 
