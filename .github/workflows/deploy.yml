@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       plan_id:
-        description: Reuse an existing Deployment Playbook plan id (empty = create/reuse a plan for this ref from PLAYBOOK_TEMPLATE)
+        description: Reuse an existing Deployment Playbook plan id (empty = create/reuse a plan for this ref from PLAYBOOK_TEMPLATE_ID)
         required: false
         type: string
       timeout_minutes:
@@ -58,7 +58,7 @@ jobs:
         with:
           playbook-url: ${{ vars.PLAYBOOK_URL }}
           api-token: ${{ secrets.PLAYBOOK_API_TOKEN }}
-          template: ${{ vars.PLAYBOOK_TEMPLATE }}
+          template-id: ${{ vars.PLAYBOOK_TEMPLATE_ID }}
           ref: ${{ github.ref_name }}
           vercel-bypass: ${{ secrets.VERCEL_AUTOMATION_BYPASS }}
       - id: plan

@@ -6,6 +6,9 @@ The app is deliberately tiny (a Node.js HTTP server with one `node:test` unit te
 [`create-playbook-plan`](.github/actions/create-playbook-plan/action.yml) and
 [`wait-for-playbook`](.github/actions/wait-for-playbook/action.yml).
 
+Full documentation: [deployment-playbook.com/docs](https://deployment-playbook.com/docs) (GitLab CI and Azure DevOps
+versions of this pipeline are in the [recipes](https://deployment-playbook.com/docs/recipes)).
+
 Pushing a release tag (`v*`) creates a Deployment Playbook plan from your template automatically; the pipeline then
 waits for the approvals of each phase.
 
@@ -24,7 +27,7 @@ flowchart LR
 ```
 
 1. **test** – runs `npm test`. In parallel, **create-plan** calls `POST /api/plans` with the template from
-   `PLAYBOOK_TEMPLATE`, `ref` = the tag name, the commit SHA, repository and a link to the run. The plan URL is written
+   `PLAYBOOK_TEMPLATE_ID`, `ref` = the tag name, the commit SHA, repository and a link to the run. The plan URL is written
    to the job summary. Re-running the workflow for the same tag reuses the same plan (idempotent per repository + ref).
    On a manual run you can pass `plan_id` to gate on an existing plan instead.
 2. **before** – waits until every *Before deployment* step is approved or skipped (`?phase=during` returns
@@ -60,7 +63,7 @@ additionally requires `planStatus == "done"` (`require-done: "true"` on the acti
    | --- | --- | --- |
    | Secret | `PLAYBOOK_API_TOKEN` | the workspace API token |
    | Variable | `PLAYBOOK_URL` | e.g. `https://deployment-playbook.com` |
-   | Variable | `PLAYBOOK_TEMPLATE` | template name (exact) or id, e.g. `Standard deployment` |
+   | Variable | `PLAYBOOK_TEMPLATE_ID` | template id, copy it from the template page (Templates → your template → *Copy*). Ids stay stable when a template is renamed |
    | Secret (optional) | `VERCEL_AUTOMATION_BYPASS` | only if you self-host Deployment Playbook behind Vercel Deployment Protection |
 3. Have a template with steps in the three phases, e.g.
    - **Before deployment**: "Change approved by product owner", "DB backup taken"
@@ -81,10 +84,10 @@ you go and the run turns green once the After deployment steps are done.
 ```bash
 curl -X POST "$PLAYBOOK_URL/api/plans" \
   -H "Authorization: Bearer $PLAYBOOK_API_TOKEN" -H "Content-Type: application/json" \
-  -d '{"template":"Standard deployment","ref":"v1.0.0","repository":"acme/app","commitSha":"3f2c1ab","runUrl":"https://github.com/acme/app/actions/runs/1"}'
+  -d '{"templateId":"cmabc123template","ref":"v1.0.0","repository":"acme/app","commitSha":"3f2c1ab","runUrl":"https://github.com/acme/app/actions/runs/1"}'
 ```
 
-Body: `template` (required, id or exact name), optional `name` (default `Release <ref>`), `environment` (default
+Body: `templateId` (required; the older `template` field with an id or exact name still works), optional `name` (default `Release <ref>`), `environment` (default
 `production`), `ref`, `repository`, `commitSha`, `runUrl`, `fourEyes`. Response (201 created, 200 when a plan for the
 same repository + ref already exists):
 
